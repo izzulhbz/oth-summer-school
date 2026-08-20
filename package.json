@@ -1,6 +1,9 @@
 {
   "name": "hedera-deploy",
   "version": "1.0.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "description": "Deploy a compiled smart contract to the Hedera Testnet via the Hedera JS SDK and call it.",
   "type": "module",
   "main": "deploy.js",

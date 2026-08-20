@@ -1,19 +1,17 @@
 /**
  * End-to-end demonstration on the Hedera Testnet.
  *
- * Deploys a fresh Voting contract and then runs the full story with four
- * distinct accounts, including the two rejections that prove the rules hold:
+ * Deploys a fresh Voting contract and then runs the full story:
  *
- *   1. deploy with three topics and an admin from the constructor
- *   2. admin blocks voter3
+ *   1. deploy with three topics (operator becomes admin automatically)
+ *   2. admin/operator blocks voter3
  *   3. operator, voter1 and voter2 each vote once          -> accepted
  *   4. voter3 votes                                        -> rejected, blocked
  *   5. voter1 votes a second time                          -> rejected, already voted
  *   6. voter2 tries to block voter1                        -> rejected, not admin
- *   7. the owner tries to block voter1                     -> rejected, not admin
- *   8. print the blocklist and the tally
+ *   7. print the winner and per-topic counts
  *
- * Requires .env with the operator, ADMIN and VOTER1..VOTER3
+ * Requires .env with the operator and VOTER1..VOTER3
  * (see create-accounts.js).
  *
  * Usage:
@@ -42,8 +40,8 @@ import {
 const TOPICS = ["Pizza", "Pasta", "Sushi"];
 
 const DEPLOY_GAS = 1_000_000;
-const WRITE_GAS = 200_000;
-const QUERY_GAS = 150_000;
+const WRITE_GAS  = 200_000;
+const QUERY_GAS  = 150_000;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -84,7 +82,7 @@ async function expectRejection(client, contractId, label, fn, params, expectedEr
     return false;
   } catch {
     const reason = await fetchRevertReason(client, response.transactionId, selectors);
-    const matched = reason.startsWith(expectedError);
+    const matched = reason.includes(expectedError);
     console.log(
       `  ${matched ? "✅" : "⚠️ "} ${label}  ->  rejected: ${reason}` +
         (matched ? "" : `  (expected ${expectedError})`)
@@ -109,10 +107,6 @@ async function readUint(client, contractId, fn, params) {
   return (await read(client, contractId, fn, params)).getUint256(0);
 }
 
-async function readAddress(client, contractId, fn, params) {
-  return "0x" + (await read(client, contractId, fn, params)).getAddress(0);
-}
-
 /* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
@@ -130,17 +124,8 @@ async function main() {
   }
   const [voter1, voter2, voter3] = voters;
 
-  let admin;
-  try {
-    admin = loadAccount("admin");
-  } catch {
-    throw new Error(
-      "No ADMIN account in .env. Run: node create-accounts.js --prefix ADMIN --count 1"
-    );
-  }
-
-  const ownerClient = makeClient(operator);
-  const adminClient = makeClient(admin);
+  // The operator is both deployer and admin — no separate ADMIN account needed.
+  const operatorClient = makeClient(operator);
 
   /* --- 1. deploy ------------------------------------------------- */
 
@@ -159,11 +144,10 @@ async function main() {
         .addString(TOPICS[0])
         .addString(TOPICS[1])
         .addString(TOPICS[2])
-        .addAddress(admin.evmAddress)
     )
-    .execute(ownerClient);
+    .execute(operatorClient);
 
-  const contractId = (await createResponse.getReceipt(ownerClient)).contractId;
+  const contractId = (await createResponse.getReceipt(operatorClient)).contractId;
   if (!contractId) throw new Error("Deployment produced no contract id");
 
   console.log(`   ✅ Contract ID : ${contractId.toString()}`);
@@ -172,21 +156,20 @@ async function main() {
   updateEnvFile({ CONTRACT_ID: contractId.toString() });
 
   console.log("\n   Participants");
-  console.log(`     owner/operator : ${operator.accountId.toString()}  ${operator.evmAddress}`);
-  console.log(`     admin          : ${admin.accountId.toString()}  ${admin.evmAddress}`);
+  console.log(`     admin/operator : ${operator.accountId.toString()}  ${operator.evmAddress}`);
   for (const v of voters.slice(0, 3)) {
     console.log(`     ${v.label.padEnd(14)} : ${v.accountId.toString()}  ${v.evmAddress}`);
   }
 
   /* --- 2. block voter3 -------------------------------------------- */
 
-  console.log("\n2. The admin blocks voter3");
+  console.log("\n2. The admin (operator) blocks voter3");
   await expectSuccess(
-    adminClient,
+    operatorClient,
     contractId,
-    `admin blocks ${voter3.label}`,
-    "blockVoter",
-    new ContractFunctionParameters().addAddress(voter3.evmAddress)
+    `operator blocks ${voter3.label}`,
+    "setBlocked",
+    new ContractFunctionParameters().addAddress(voter3.evmAddress).addBool(true)
   );
 
   /* --- 3. three accepted votes ------------------------------------ */
@@ -197,7 +180,7 @@ async function main() {
   const voter3Client = makeClient(voter3);
 
   await expectSuccess(
-    ownerClient, contractId, `operator votes "${TOPICS[0]}"`,
+    operatorClient, contractId, `operator votes "${TOPICS[0]}"`,
     "vote", new ContractFunctionParameters().addUint256(0)
   );
   await expectSuccess(
@@ -209,62 +192,49 @@ async function main() {
     "vote", new ContractFunctionParameters().addUint256(1)
   );
 
-  /* --- 4-6. the three rejections ---------------------------------- */
+  /* --- 4-6. three rejections -------------------------------------- */
 
   console.log("\n4. A blocked account cannot vote");
   await expectRejection(
     voter3Client, contractId, `voter3   votes "${TOPICS[2]}"`,
     "vote", new ContractFunctionParameters().addUint256(2),
-    "AccountBlocked"
+    "Account is blocked"
   );
 
   console.log("\n5. Nobody can vote twice");
   await expectRejection(
     voter1Client, contractId, "voter1   votes again",
     "vote", new ContractFunctionParameters().addUint256(1),
-    "AlreadyVoted"
+    "Already voted"
   );
 
   console.log("\n6. Only the admin can change the blocklist");
   await expectRejection(
     voter2Client, contractId, "voter2   blocks voter1",
-    "blockVoter",
-    new ContractFunctionParameters().addAddress(voter1.evmAddress),
-    "NotAdmin"
+    "setBlocked",
+    new ContractFunctionParameters().addAddress(voter1.evmAddress).addBool(true),
+    "Only admin can block"
   );
 
-  console.log("\n7. Not even the owner may change it - the roles are separate");
-  await expectRejection(
-    ownerClient, contractId, "operator blocks voter1",
-    "blockVoter",
-    new ContractFunctionParameters().addAddress(voter1.evmAddress),
-    "NotAdmin"
-  );
+  /* --- 7. results -------------------------------------------------- */
 
-  /* --- 8. blocklist and results ------------------------------------ */
+  console.log("\n7. Final results");
 
-  console.log("\n8. The blocklist, read back from the contract");
-  const blockedCount = Number(
-    (await readUint(ownerClient, contractId, "getBlockedCount")).toString()
-  );
-  for (let i = 0; i < blockedCount; i++) {
-    const address = await readAddress(
-      ownerClient, contractId, "getBlockedVoter",
-      new ContractFunctionParameters().addUint256(i)
-    );
-    console.log(`   ${i}  ${address}`);
+  for (let i = 0; i < 3; i++) {
+    const topic = await readString(operatorClient, contractId, "getTopic",
+      new ContractFunctionParameters().addUint256(i));
+    const votes = await readUint(operatorClient, contractId, "getVotes",
+      new ContractFunctionParameters().addUint256(i));
+    console.log(`   ${i}  ${topic.padEnd(10)} ${votes.toString()} vote(s)`);
   }
-  if (blockedCount === 0) console.log("   (empty)");
 
-  console.log("\n9. Final result");
-  const results = await readString(ownerClient, contractId, "getResults");
-  console.log(`   ${results}`);
+  const winnerName = await readString(operatorClient, contractId, "winner");
+  console.log(`\n   Winner: "${winnerName}"`);
 
   console.log(`\n   Verify every transaction above at:`);
   console.log(`   ${hashscanContract(contractId.toString())}`);
 
-  ownerClient.close();
-  adminClient.close();
+  operatorClient.close();
   voter1Client.close();
   voter2Client.close();
   voter3Client.close();

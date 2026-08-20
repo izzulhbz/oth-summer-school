@@ -1,18 +1,17 @@
 /**
  * Admin-only: bar an account from voting, or lift the bar.
  *
- * Only the admin account named in the contract's constructor may do this -
- * not even the owner can. Sending as anyone else is rejected with NotAdmin().
+ * The operator is both deployer and admin, so by default this script sends
+ * the transaction as the operator. Use --as voter2 to demonstrate rejection.
  *
  * Usage:
  *   node block.js --account voter3
  *   node block.js --account voter3 --unblock
- *   node block.js --account voter1 --as voter2      (demonstrates NotAdmin)
- *   node block.js --account voter1 --as operator    (owner is not the admin)
+ *   node block.js --account voter1 --as voter2    (demonstrates "Only admin can block")
  *
- * --account   an account label (voter1, operator, ...) or a raw 0x address
+ * --account   an account label (voter1, voter2, voter3) or a raw 0x address
  * --unblock   lift the block instead of applying it
- * --as        who sends the transaction (default: admin)
+ * --as        who sends the transaction (default: operator)
  * --contract  contract id (default: CONTRACT_ID in .env)
  */
 
@@ -44,7 +43,7 @@ function resolveAddress(value) {
 async function main() {
   const opts = flags(process.argv);
 
-  const sender = opts.as ?? "admin";
+  const sender = opts.as ?? "operator";
   const shouldBlock = !opts.unblock;
   const target = resolveAddress(opts.account);
   const contractIdString = opts.contract ?? process.env.CONTRACT_ID;

@@ -1,23 +1,12 @@
 /**
  * Deploy the Voting contract and remember its id.
  *
- * Same job as deploy.js, plus two conveniences for a live demo:
- * it fills in the three topics, and it writes CONTRACT_ID into .env so
- * vote.js / block.js / status.js can find the contract without pasting an
- * id into every command.
- *
- * The constructor also takes the admin address - the only account allowed to
- * change the blocklist. It defaults to the ADMIN_* account in .env.
+ * The deployer (operator) automatically becomes the admin — the only
+ * account allowed to block voters. No separate ADMIN account is needed.
  *
  * Usage:
  *   node deploy-voting.js
  *   node deploy-voting.js --topics "Pizza,Pasta,Sushi"
- *   node deploy-voting.js --admin voter2        (or a raw 0x address)
- *
- * The equivalent using the template script directly:
- *   node deploy.js ./artifacts/contracts/Voting.sol/Voting.json --gas 1000000 \
- *     --arg-string "Pizza" --arg-string "Pasta" --arg-string "Sushi" \
- *     --arg-address 0xTHE_ADMIN_ADDRESS
  */
 
 import fs from "node:fs";
@@ -33,7 +22,7 @@ import {
 } from "./lib/hedera.js";
 
 const DEPLOY_GAS = 1_000_000;
-const DEFAULT_TOPICS = ["Masala Dosai", "Briyani", "SushPani Puri"];
+const DEFAULT_TOPICS = ["Pizza", "Pasta", "Sushi"];
 
 async function main() {
   const opts = flags(process.argv);
@@ -55,36 +44,14 @@ async function main() {
   const artifact = JSON.parse(fs.readFileSync(path.resolve(ARTIFACT_PATH), "utf8"));
   const bytecode = artifact.bytecode.replace(/^0x/, "");
 
+  // The operator deploys the contract and automatically becomes the admin.
   const operator = loadAccount("operator");
-
-  // The admin is a separate account from the owner: it is the only role that can change the blocklist.
-  let adminAddress;
-  let adminLabel;
-  if (opts.admin && String(opts.admin).startsWith("0x")) {
-    adminAddress = String(opts.admin);
-    adminLabel = "(raw address)";
-  } else {
-    const label = String(opts.admin ?? "admin");
-    try {
-      const adminAccount = loadAccount(label);
-      adminAddress = adminAccount.evmAddress;
-      adminLabel = adminAccount.accountId.toString();
-    } catch {
-      throw new Error(
-        `No ${label.toUpperCase()}_ID / ${label.toUpperCase()}_KEY in .env.\n` +
-          "   Create the admin account first:\n" +
-          "     node create-accounts.js --prefix ADMIN --count 1"
-      );
-    }
-  }
-
   const client = makeClient(operator);
 
   console.log("Deploying Voting to Hedera Testnet");
-  console.log(`  owner  : ${operator.accountId.toString()}  ${operator.evmAddress}`);
-  console.log(`  admin  : ${adminLabel}  ${adminAddress}`);
-  console.log(`  topics : ${topics.map((t, i) => `${i}="${t}"`).join("  ")}`);
-  console.log(`  gas    : ${DEPLOY_GAS}\n`);
+  console.log(`  admin/deployer : ${operator.accountId.toString()}  ${operator.evmAddress}`);
+  console.log(`  topics         : ${topics.map((t, i) => `${i}="${t}"`).join("  ")}`);
+  console.log(`  gas            : ${DEPLOY_GAS}\n`);
 
   const response = await new ContractCreateFlow()
     .setGas(DEPLOY_GAS)
@@ -95,7 +62,6 @@ async function main() {
         .addString(topics[0])
         .addString(topics[1])
         .addString(topics[2])
-        .addAddress(adminAddress)
     )
     .execute(client);
 
@@ -113,7 +79,7 @@ async function main() {
   console.log(`  HashScan    : ${hashscanContract(contractId.toString())}`);
   console.log("\n  CONTRACT_ID saved to .env - the other scripts will pick it up.");
   console.log("  Next: node status.js");
-  console.log("  Then: node block.js --account voter3     (sent by the admin)");
+  console.log("  Then: node block.js --account voter1  (you are the admin)");
 
   client.close();
 }

@@ -6,12 +6,11 @@
  *   node vote.js --as operator --topic 2
  *   node vote.js --as voter3 --topic 1 --contract 0.0.1234567
  *
- * --as        operator | voter1 | voter2 | ...   (default: operator)
- * --topic     0, 1 or 2                          (required)
- * --contract  contract id                        (default: CONTRACT_ID in .env)
+ * --as        operator | voter1 | voter2 | voter3   (default: operator)
+ * --topic     0, 1 or 2                             (required)
+ * --contract  contract id                           (default: CONTRACT_ID in .env)
  *
- * A rejected vote is reported with the exact contract error that caused it,
- * and exits non-zero.
+ * A rejected vote is reported with the exact reason from the contract.
  */
 
 import {
@@ -29,13 +28,13 @@ import {
   flags,
 } from "./lib/hedera.js";
 
-const VOTE_GAS = 200_000;
+const VOTE_GAS  = 200_000;
 const QUERY_GAS = 120_000;
 
 async function main() {
   const opts = flags(process.argv);
 
-  const who = opts.as ?? "operator";
+  const who   = opts.as ?? "operator";
   const topic = Number(opts.topic);
   const contractIdString = opts.contract ?? process.env.CONTRACT_ID;
 
@@ -48,28 +47,32 @@ async function main() {
     );
   }
 
-  const account = loadAccount(who);
-  const client = makeClient(account);
+  const account    = loadAccount(who);
+  const client     = makeClient(account);
   const contractId = ContractId.fromString(contractIdString);
-  const selectors = loadErrorSelectors();
+  const selectors  = loadErrorSelectors();
 
-  // Free read first, so the reason for a rejection is visible up front.
-  const canVote = await new ContractCallQuery()
-    .setContractId(contractId)
-    .setGas(QUERY_GAS)
-    .setFunction("canVote", new ContractFunctionParameters().addAddress(account.evmAddress))
-    .execute(client);
+  // Pre-flight reads: check hasVoted and blocked before sending the transaction.
+  const hasVoted = (await new ContractCallQuery()
+    .setContractId(contractId).setGas(QUERY_GAS)
+    .setFunction("hasVoted", new ContractFunctionParameters().addAddress(account.evmAddress))
+    .execute(client)).getBool(0);
 
-  const topicName = await new ContractCallQuery()
-    .setContractId(contractId)
-    .setGas(QUERY_GAS)
+  const isBlocked = (await new ContractCallQuery()
+    .setContractId(contractId).setGas(QUERY_GAS)
+    .setFunction("blocked", new ContractFunctionParameters().addAddress(account.evmAddress))
+    .execute(client)).getBool(0);
+
+  const topicName = (await new ContractCallQuery()
+    .setContractId(contractId).setGas(QUERY_GAS)
     .setFunction("getTopic", new ContractFunctionParameters().addUint256(topic))
-    .execute(client);
+    .execute(client)).getString(0);
 
   console.log(`Voting as ${who} (${account.accountId.toString()} / ${account.evmAddress})`);
   console.log(`  contract  : ${contractIdString}`);
-  console.log(`  topic     : ${topic} "${topicName.getString(0)}"`);
-  console.log(`  canVote   : ${canVote.getBool(0)}\n`);
+  console.log(`  topic     : ${topic} "${topicName}"`);
+  console.log(`  hasVoted  : ${hasVoted}`);
+  console.log(`  blocked   : ${isBlocked}\n`);
 
   const response = await new ContractExecuteTransaction()
     .setContractId(contractId)
@@ -88,14 +91,26 @@ async function main() {
     process.exit(1);
   }
 
-  const results = await new ContractCallQuery()
-    .setContractId(contractId)
-    .setGas(QUERY_GAS)
-    .setFunction("getResults")
-    .execute(client);
+  // Show per-topic counts after a successful vote.
+  console.log("\nCurrent tally:");
+  for (let i = 0; i < 3; i++) {
+    const t = (await new ContractCallQuery()
+      .setContractId(contractId).setGas(QUERY_GAS)
+      .setFunction("getTopic", new ContractFunctionParameters().addUint256(i))
+      .execute(client)).getString(0);
+    const v = (await new ContractCallQuery()
+      .setContractId(contractId).setGas(QUERY_GAS)
+      .setFunction("getVotes", new ContractFunctionParameters().addUint256(i))
+      .execute(client)).getUint256(0).toString();
+    console.log(`  ${i}  ${t.padEnd(12)} ${v}`);
+  }
 
-  console.log(`\nTally : ${results.getString(0)}`);
-  console.log(`HashScan : ${hashscanContract(contractIdString)}`);
+  const winnerName = (await new ContractCallQuery()
+    .setContractId(contractId).setGas(QUERY_GAS)
+    .setFunction("winner")
+    .execute(client)).getString(0);
+  console.log(`\n  Winner so far: "${winnerName}"`);
+  console.log(`  HashScan: ${hashscanContract(contractIdString)}`);
 
   client.close();
 }

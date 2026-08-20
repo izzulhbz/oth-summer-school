@@ -13,15 +13,15 @@ import {Voting} from "../contracts/Voting.sol";
 contract VotingTest is Test {
     Voting private voting;
 
-    // This test contract deploys Voting, so it is the owner.
-    address private constant ADMIN = address(0xAD319);
-    address private constant ALICE = address(0xA11CE);
-    address private constant BOB = address(0xB0B);
-    address private constant CAROL = address(0xCA401);
+    // This test contract deploys Voting, so it becomes the admin.
+    address private constant ALICE   = address(0xA11CE);
+    address private constant BOB     = address(0xB0B);
+    address private constant CAROL   = address(0xCA401);
     address private constant MALLORY = address(0x1A110);
 
     function setUp() public {
-        voting = new Voting("Pizza", "Pasta", "Sushi", ADMIN);
+        // The test contract (address(this)) is the deployer → admin.
+        voting = new Voting("Pizza", "Pasta", "Sushi");
     }
 
     /* ---------------------------------------------------------------- */
@@ -32,37 +32,27 @@ contract VotingTest is Test {
         assertEq(voting.getTopic(0), "Pizza");
         assertEq(voting.getTopic(1), "Pasta");
         assertEq(voting.getTopic(2), "Sushi");
-        assertEq(voting.TOPIC_COUNT(), 3);
     }
 
-    function test_DeployerBecomesOwnerAndAdminIsSeparate() public view {
-        assertEq(voting.owner(), address(this));
-        assertEq(voting.admin(), ADMIN);
-        assertTrue(voting.owner() != voting.admin());
+    function test_DeployerBecomesAdmin() public view {
+        assertEq(voting.admin(), address(this));
     }
 
     function test_TalliesStartAtZero() public view {
         assertEq(voting.getVotes(0), 0);
         assertEq(voting.getVotes(1), 0);
         assertEq(voting.getVotes(2), 0);
-        assertEq(voting.totalVotes(), 0);
-        assertEq(voting.getBlockedCount(), 0);
     }
 
     function test_EmptyTopicIsRejected() public {
-        vm.expectRevert(Voting.EmptyTopic.selector);
-        new Voting("", "Pasta", "Sushi", ADMIN);
+        vm.expectRevert(bytes("Topic A cannot be empty"));
+        new Voting("", "Pasta", "Sushi");
 
-        vm.expectRevert(Voting.EmptyTopic.selector);
-        new Voting("Pizza", "", "Sushi", ADMIN);
+        vm.expectRevert(bytes("Topic B cannot be empty"));
+        new Voting("Pizza", "", "Sushi");
 
-        vm.expectRevert(Voting.EmptyTopic.selector);
-        new Voting("Pizza", "Pasta", "", ADMIN);
-    }
-
-    function test_ZeroAdminIsRejected() public {
-        vm.expectRevert(Voting.ZeroAddress.selector);
-        new Voting("Pizza", "Pasta", "Sushi", address(0));
+        vm.expectRevert(bytes("Topic C cannot be empty"));
+        new Voting("Pizza", "Pasta", "");
     }
 
     /* ---------------------------------------------------------------- */
@@ -76,7 +66,6 @@ contract VotingTest is Test {
         assertEq(voting.getVotes(0), 0);
         assertEq(voting.getVotes(1), 1);
         assertEq(voting.getVotes(2), 0);
-        assertEq(voting.totalVotes(), 1);
         assertTrue(voting.hasVoted(ALICE));
     }
 
@@ -87,7 +76,6 @@ contract VotingTest is Test {
         voting.vote(0);
 
         assertEq(voting.getVotes(0), 2);
-        assertEq(voting.totalVotes(), 2);
     }
 
     function test_VoteEmitsEvent() public {
@@ -98,19 +86,17 @@ contract VotingTest is Test {
         voting.vote(2);
     }
 
-    /// The headline rule from the assignment.
     function test_CannotVoteTwice() public {
         vm.prank(ALICE);
         voting.vote(0);
 
         vm.prank(ALICE);
-        vm.expectRevert(Voting.AlreadyVoted.selector);
+        vm.expectRevert(bytes("Already voted"));
         voting.vote(1);
 
-        // The first vote stands, and nothing was double counted.
+        // The first vote stands.
         assertEq(voting.getVotes(0), 1);
         assertEq(voting.getVotes(1), 0);
-        assertEq(voting.totalVotes(), 1);
     }
 
     function test_CannotVoteTwiceEvenForTheSameTopic() public {
@@ -118,23 +104,17 @@ contract VotingTest is Test {
         voting.vote(0);
 
         vm.prank(ALICE);
-        vm.expectRevert(Voting.AlreadyVoted.selector);
+        vm.expectRevert(bytes("Already voted"));
         voting.vote(0);
     }
 
     function test_InvalidTopicIsRejected() public {
         vm.prank(ALICE);
-        vm.expectRevert(abi.encodeWithSelector(Voting.InvalidTopic.selector, 3));
+        vm.expectRevert(bytes("Invalid topic index"));
         voting.vote(3);
 
         // A rejected vote must not consume Alice's one chance.
         assertFalse(voting.hasVoted(ALICE));
-        assertTrue(voting.canVote(ALICE));
-    }
-
-    function test_WhoAmIReportsTheCaller() public {
-        vm.prank(ALICE);
-        assertEq(voting.whoAmI(), ALICE);
     }
 
     /* ---------------------------------------------------------------- */
@@ -142,24 +122,19 @@ contract VotingTest is Test {
     /* ---------------------------------------------------------------- */
 
     function test_BlockedAccountCannotVote() public {
-        vm.prank(ADMIN);
-        voting.blockVoter(MALLORY);
+        // address(this) is the admin — no prank needed.
+        voting.setBlocked(MALLORY, true);
 
         assertTrue(voting.blocked(MALLORY));
-        assertFalse(voting.canVote(MALLORY));
 
         vm.prank(MALLORY);
-        vm.expectRevert(Voting.AccountBlocked.selector);
+        vm.expectRevert(bytes("Account is blocked"));
         voting.vote(0);
-
-        assertEq(voting.totalVotes(), 0);
     }
 
     function test_UnblockingRestoresTheRightToVote() public {
-        vm.startPrank(ADMIN);
-        voting.blockVoter(MALLORY);
-        voting.unblockVoter(MALLORY);
-        vm.stopPrank();
+        voting.setBlocked(MALLORY, true);
+        voting.setBlocked(MALLORY, false);
 
         vm.prank(MALLORY);
         voting.vote(0);
@@ -170,102 +145,9 @@ contract VotingTest is Test {
         vm.prank(ALICE);
         voting.vote(0);
 
-        vm.prank(ADMIN);
-        voting.blockVoter(ALICE);
+        voting.setBlocked(ALICE, true);
 
         assertEq(voting.getVotes(0), 1);
-        assertEq(voting.totalVotes(), 1);
-    }
-
-    /* ---------------------------------------------------------------- */
-    /* Blocklist enumeration                                            */
-    /* ---------------------------------------------------------------- */
-
-    function test_BlockedListIsEnumerable() public {
-        vm.startPrank(ADMIN);
-        voting.blockVoter(ALICE);
-        voting.blockVoter(BOB);
-        voting.blockVoter(CAROL);
-        vm.stopPrank();
-
-        assertEq(voting.getBlockedCount(), 3);
-        assertEq(voting.getBlockedVoter(0), ALICE);
-        assertEq(voting.getBlockedVoter(1), BOB);
-        assertEq(voting.getBlockedVoter(2), CAROL);
-
-        address[] memory list = voting.getBlockedVoters();
-        assertEq(list.length, 3);
-        assertEq(list[0], ALICE);
-        assertEq(list[2], CAROL);
-    }
-
-    /// Blocking the same account twice must not create a duplicate entry.
-    function test_BlockingTwiceIsIdempotent() public {
-        vm.startPrank(ADMIN);
-        voting.blockVoter(ALICE);
-        voting.blockVoter(ALICE);
-        voting.blockVoter(ALICE);
-        vm.stopPrank();
-
-        assertEq(voting.getBlockedCount(), 1);
-        assertEq(voting.getBlockedVoter(0), ALICE);
-    }
-
-    function test_UnblockingRemovesFromTheList() public {
-        vm.startPrank(ADMIN);
-        voting.blockVoter(ALICE);
-        voting.blockVoter(BOB);
-        voting.blockVoter(CAROL);
-
-        // Remove from the middle - exercises the swap-and-pop path.
-        voting.unblockVoter(BOB);
-        vm.stopPrank();
-
-        assertEq(voting.getBlockedCount(), 2);
-        assertFalse(voting.blocked(BOB));
-
-        address[] memory list = voting.getBlockedVoters();
-        assertEq(list.length, 2);
-        // ALICE stays in place, CAROL is swapped into BOB's slot.
-        assertEq(list[0], ALICE);
-        assertEq(list[1], CAROL);
-    }
-
-    function test_UnblockingEveryoneEmptiesTheList() public {
-        vm.startPrank(ADMIN);
-        voting.blockVoter(ALICE);
-        voting.blockVoter(BOB);
-        voting.unblockVoter(ALICE);
-        voting.unblockVoter(BOB);
-        vm.stopPrank();
-
-        assertEq(voting.getBlockedCount(), 0);
-        assertEq(voting.getBlockedVoters().length, 0);
-    }
-
-    function test_ReblockingAfterUnblockWorks() public {
-        vm.startPrank(ADMIN);
-        voting.blockVoter(ALICE);
-        voting.unblockVoter(ALICE);
-        voting.blockVoter(ALICE);
-        vm.stopPrank();
-
-        assertEq(voting.getBlockedCount(), 1);
-        assertEq(voting.getBlockedVoter(0), ALICE);
-        assertTrue(voting.blocked(ALICE));
-    }
-
-    function test_UnblockingSomeoneNeverBlockedIsANoOp() public {
-        vm.prank(ADMIN);
-        voting.unblockVoter(ALICE);
-
-        assertEq(voting.getBlockedCount(), 0);
-        assertFalse(voting.blocked(ALICE));
-    }
-
-    function test_BlockedVoterRejectsBadIndex() public {
-        vm.expectRevert(abi.encodeWithSelector(Voting.InvalidIndex.selector, 0));
-        voting.getBlockedVoter(0);
     }
 
     /* ---------------------------------------------------------------- */
@@ -274,147 +156,83 @@ contract VotingTest is Test {
 
     function test_OnlyAdminCanBlock() public {
         vm.prank(MALLORY);
-        vm.expectRevert(Voting.NotAdmin.selector);
-        voting.blockVoter(ALICE);
+        vm.expectRevert(bytes("Only admin can block"));
+        voting.setBlocked(ALICE, true);
 
         assertFalse(voting.blocked(ALICE));
     }
 
-    /// The owner deploys the ballot but does not police it.
-    function test_OwnerCannotBlockEither() public {
-        vm.expectRevert(Voting.NotAdmin.selector);
-        voting.blockVoter(ALICE);
-    }
-
-    function test_AdminCannotBlockTheOwner() public {
-        vm.prank(ADMIN);
-        vm.expectRevert(Voting.OwnerCannotBeBlocked.selector);
-        voting.blockVoter(address(this));
-    }
-
-    function test_AdminCannotBlockItself() public {
-        vm.prank(ADMIN);
-        vm.expectRevert(Voting.AdminCannotBeBlocked.selector);
-        voting.blockVoter(ADMIN);
-    }
-
     function test_ZeroAddressCannotBeBlocked() public {
-        vm.prank(ADMIN);
-        vm.expectRevert(Voting.ZeroAddress.selector);
-        voting.blockVoter(address(0));
-    }
-
-    function test_OnlyOwnerCanChangeTheAdmin() public {
-        vm.prank(MALLORY);
-        vm.expectRevert(Voting.NotOwner.selector);
-        voting.setAdmin(MALLORY);
-
-        // Not even the current admin may hand the role on.
-        vm.prank(ADMIN);
-        vm.expectRevert(Voting.NotOwner.selector);
-        voting.setAdmin(MALLORY);
-
-        assertEq(voting.admin(), ADMIN);
-    }
-
-    function test_OwnerCanReplaceTheAdmin() public {
-        voting.setAdmin(CAROL);
-        assertEq(voting.admin(), CAROL);
-
-        // The old admin loses the privilege ...
-        vm.prank(ADMIN);
-        vm.expectRevert(Voting.NotAdmin.selector);
-        voting.blockVoter(ALICE);
-
-        // ... and the new one gains it.
-        vm.prank(CAROL);
-        voting.blockVoter(ALICE);
-        assertTrue(voting.blocked(ALICE));
-    }
-
-    function test_AdminCannotBeSetToZero() public {
-        vm.expectRevert(Voting.ZeroAddress.selector);
-        voting.setAdmin(address(0));
+        vm.expectRevert(bytes("Zero address not allowed"));
+        voting.setBlocked(address(0), true);
     }
 
     /* ---------------------------------------------------------------- */
     /* Results                                                          */
     /* ---------------------------------------------------------------- */
 
-    function test_GetResultsIsPrintable() public {
-        assertEq(voting.getResults(), "Pizza: 0 | Pasta: 0 | Sushi: 0");
-
-        vm.prank(ALICE);
-        voting.vote(0);
-        vm.prank(BOB);
-        voting.vote(0);
-        voting.vote(1); // the owner votes too
-
-        assertEq(voting.getResults(), "Pizza: 2 | Pasta: 1 | Sushi: 0");
+    function test_WinnerIsEmptyBeforeAnyVotes() public view {
+        assertEq(voting.winner(), "");
     }
 
-    /// Exercises the multi-digit path of the uint -> string helper.
-    function test_GetResultsHandlesMultiDigitCounts() public {
-        for (uint160 i = 1; i <= 12; i++) {
-            vm.prank(address(i));
-            voting.vote(0);
-        }
-        assertEq(voting.getVotes(0), 12);
-        assertEq(voting.getResults(), "Pizza: 12 | Pasta: 0 | Sushi: 0");
+    function test_WinnerReturnsTopicWithMostVotes() public {
+        vm.prank(ALICE);
+        voting.vote(0); // Pizza
+        vm.prank(BOB);
+        voting.vote(0); // Pizza
+        vm.prank(CAROL);
+        voting.vote(1); // Pasta
+
+        assertEq(voting.winner(), "Pizza");
     }
 
     function test_GetTopicRejectsBadIndex() public {
-        vm.expectRevert(abi.encodeWithSelector(Voting.InvalidTopic.selector, 9));
+        vm.expectRevert(bytes("Invalid topic index"));
         voting.getTopic(9);
     }
 
     function test_GetVotesRejectsBadIndex() public {
-        vm.expectRevert(abi.encodeWithSelector(Voting.InvalidTopic.selector, 9));
+        vm.expectRevert(bytes("Invalid topic index"));
         voting.getVotes(9);
     }
 
     /* ---------------------------------------------------------------- */
-    /* The exact sequence the demo will run on Hedera                   */
+    /* Full demo sequence                                               */
     /* ---------------------------------------------------------------- */
 
     function test_FullDemoSequence() public {
-        address operator = address(this);
-        address voter1 = ALICE;
-        address voter2 = BOB;
-        address voter3 = MALLORY;
-
-        // 1. the admin - not the owner - blocks voter3
-        vm.prank(ADMIN);
-        voting.blockVoter(voter3);
-        assertEq(voting.getBlockedCount(), 1);
-        assertEq(voting.getBlockedVoter(0), voter3);
+        // 1. admin (this contract) blocks MALLORY
+        voting.setBlocked(MALLORY, true);
+        assertTrue(voting.blocked(MALLORY));
 
         // 2. three successful votes
-        voting.vote(0); // operator  -> Pizza
-        vm.prank(voter1);
-        voting.vote(0); // voter1    -> Pizza
-        vm.prank(voter2);
-        voting.vote(1); // voter2    -> Pasta
+        voting.vote(0);          // admin/deployer → Pizza
+        vm.prank(ALICE);
+        voting.vote(0);          // ALICE → Pizza
+        vm.prank(BOB);
+        voting.vote(1);          // BOB → Pasta
 
-        // 3. voter3 is blocked
-        vm.prank(voter3);
-        vm.expectRevert(Voting.AccountBlocked.selector);
+        // 3. MALLORY is blocked
+        vm.prank(MALLORY);
+        vm.expectRevert(bytes("Account is blocked"));
         voting.vote(2);
 
-        // 4. voter1 already voted
-        vm.prank(voter1);
-        vm.expectRevert(Voting.AlreadyVoted.selector);
+        // 4. ALICE already voted
+        vm.prank(ALICE);
+        vm.expectRevert(bytes("Already voted"));
         voting.vote(1);
 
-        // 5. voter2 is not the admin
-        vm.prank(voter2);
-        vm.expectRevert(Voting.NotAdmin.selector);
-        voting.blockVoter(voter1);
+        // 5. BOB is not the admin
+        vm.prank(BOB);
+        vm.expectRevert(bytes("Only admin can block"));
+        voting.setBlocked(ALICE, true);
 
-        // 6. final tally
-        assertEq(voting.getResults(), "Pizza: 2 | Pasta: 1 | Sushi: 0");
-        assertEq(voting.totalVotes(), 3);
-        assertTrue(voting.hasVoted(operator));
-        assertFalse(voting.hasVoted(voter3));
+        // 6. final results
+        assertEq(voting.getVotes(0), 2); // Pizza
+        assertEq(voting.getVotes(1), 1); // Pasta
+        assertEq(voting.getVotes(2), 0); // Sushi
+        assertEq(voting.winner(), "Pizza");
+        assertTrue(voting.hasVoted(ALICE));
+        assertFalse(voting.hasVoted(MALLORY));
     }
 }
