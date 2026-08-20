@@ -1,0 +1,8 @@
+node_modules/
+
+# Never commit real Testnet credentials. .env.example is the tracked template.
+.env
+
+# Hardhat build output
+artifacts/
+cache/

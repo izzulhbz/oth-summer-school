@@ -5,11 +5,25 @@
   "type": "module",
   "main": "deploy.js",
   "scripts": {
+    "compile": "hardhat compile",
+    "clean": "hardhat clean",
+    "test": "hardhat test solidity",
+    "create-accounts": "node create-accounts.js",
+    "deploy-voting": "node deploy-voting.js",
+    "status": "node status.js",
+    "vote": "node vote.js",
+    "block": "node block.js",
+    "demo": "node demo.js",
     "deploy": "node deploy.js",
     "call": "node call.js"
   },
   "dependencies": {
     "@hashgraph/sdk": "^2.62.0",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "js-sha3": "^0.13.0"
+  },
+  "devDependencies": {
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^3.13.0"
   }
 }
